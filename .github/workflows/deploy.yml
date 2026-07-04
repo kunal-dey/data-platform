@@ -1,0 +1,32 @@
+name: Deploy Dagster
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.0
+
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            cd ~/data-platform
+
+            git pull origin main
+
+            ~/.local/bin/uv sync --frozen
+
+            sudo systemctl restart dagster-webserver
+            sudo systemctl restart dagster-daemon
