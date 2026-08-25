@@ -203,3 +203,6 @@ __marimo__/
 **/secrets.toml
 *.secrets.toml
 explorations.ipynb
+
+# Dagster local runtime (dg dev temp homes)
+.tmp_dagster_home_*/
