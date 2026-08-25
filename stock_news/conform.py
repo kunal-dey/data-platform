@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -32,6 +33,16 @@ DEFAULT_CONCURRENCY = 2
 CONTENT_CHARS = 1800
 CANDIDATES_PER_ARTICLE = 25
 MAX_ARTICLE_AGE_DAYS = 7
+
+
+def _run_coro(coro):
+    """Run a coroutine; safe if a loop is already running (some Dagster executors)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _ensure_data_extraction_path() -> None:
@@ -536,7 +547,7 @@ def run_conform_rows(
         MAX_ARTICLE_AGE_DAYS,
         MODEL_NAME,
     )
-    return asyncio.run(
+    return _run_coro(
         _run_agent_batches(
             pending, batch_size=batch_size, concurrency=concurrency
         )

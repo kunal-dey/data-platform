@@ -46,16 +46,23 @@ def _load_module(module_name: str, filename: str):
 
 
 class SchemaPrefixedDltTranslator(DagsterDltTranslator):
-    def __init__(self, schema: str, deps: list[AssetKey] | None = None):
+    def __init__(
+        self,
+        schema: str,
+        deps: list[AssetKey] | None = None,
+        resource_deps: dict[str, list[AssetKey]] | None = None,
+    ):
         super().__init__()
         self._schema = schema
         self._deps = deps or []
+        self._resource_deps = resource_deps or {}
 
     def get_asset_spec(self, data: DltResourceTranslatorData) -> AssetSpec:
         default_spec = super().get_asset_spec(data)
         attrs: dict = {"key": AssetKey([self._schema, data.resource.name])}
-        if self._deps:
-            attrs["deps"] = self._deps
+        deps = [*self._deps, *self._resource_deps.get(data.resource.name, [])]
+        if deps:
+            attrs["deps"] = deps
         return default_spec.replace_attributes(**attrs)
 
 
@@ -128,7 +135,13 @@ def screener_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
     dlt_pipeline=_stock_news_pipeline,
     name="stock_news",
     group_name="data_extraction",
-    dagster_dlt_translator=SchemaPrefixedDltTranslator(STOCK_NEWS_SCHEMA),
+    dagster_dlt_translator=SchemaPrefixedDltTranslator(
+        STOCK_NEWS_SCHEMA,
+        # Avoid parallel scrapes under multiprocess (OOM / child crash).
+        resource_deps={
+            "articles": [AssetKey([STOCK_NEWS_SCHEMA, "companies"])],
+        },
+    ),
 )
 def stock_news_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
     yield from dlt.run(context=context)

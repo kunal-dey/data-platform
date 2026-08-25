@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pickle
 import re
 import socket
+import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -24,7 +28,7 @@ log = logging.getLogger(__name__)
 QUOTES = "https://economictimes.indiatimes.com/markets/stocks/stock-quotes"
 BASE = "https://economictimes.indiatimes.com"
 PAUSE = float(os.getenv("STOCK_NEWS_PAUSE", "1.0"))
-CONCURRENCY = int(os.getenv("STOCK_NEWS_CONCURRENCY", "4"))
+CONCURRENCY = int(os.getenv("STOCK_NEWS_CONCURRENCY", "2"))
 RETRIES = int(os.getenv("STOCK_NEWS_RETRIES", "3"))
 RETRY_BACKOFF = float(os.getenv("STOCK_NEWS_RETRY_BACKOFF", "5.0"))
 TIMEOUT = int(os.getenv("STOCK_NEWS_TIMEOUT", "30"))
@@ -331,6 +335,25 @@ def _existing_article_companies(urls: set[str]) -> dict[str, list[str]]:
     return out
 
 
+def _run_coro(coro):
+    """Run a coroutine; safe if a loop is already running (some Dagster executors)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _run_cache_path() -> Path | None:
+    """Share one scrape across companies/articles assets in the same Dagster run."""
+    run_id = os.getenv("DAGSTER_RUN_ID", "").strip()
+    if not run_id:
+        return None
+    base = Path(os.getenv("STOCK_NEWS_CACHE_DIR", tempfile.gettempdir()))
+    return base / f"stock_news_fetch_{run_id}.pkl"
+
+
 def fetch_stock_news_tables(
     *,
     limit: int | None = None,
@@ -338,6 +361,12 @@ def fetch_stock_news_tables(
     proxy: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Return ``{companies, articles}`` DataFrames for dlt."""
+    cache_path = _run_cache_path()
+    if cache_path is not None and cache_path.is_file():
+        log.info("Reusing stock news fetch cache %s", cache_path)
+        with cache_path.open("rb") as f:
+            return pickle.load(f)
+
     proxy = proxy if proxy is not None else _proxy()
     workers = max(1, int(concurrency if concurrency is not None else CONCURRENCY))
 
@@ -349,14 +378,20 @@ def fetch_stock_news_tables(
         workers,
         PAUSE,
     )
-    raw_items = asyncio.run(
+    raw_items = _run_coro(
         _extract_async(company_rows, concurrency=workers, proxy=proxy)
     )
     articles = _collapse_by_url(raw_items)
     log.info("ET news done: articles=%s", len(articles))
-    return {
+    result = {
         "companies": companies_df,
         "articles": pd.DataFrame(articles)
         if articles
         else pd.DataFrame(columns=["url", "heading", "content", "date", "companies"]),
     }
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("wb") as f:
+            pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
+        log.info("Wrote stock news fetch cache %s", cache_path)
+    return result

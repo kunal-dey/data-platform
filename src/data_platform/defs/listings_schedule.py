@@ -38,6 +38,9 @@ stock_news_job = dg.define_asset_job(
         "Scrape ET companies/articles, then LLM-conform new articles "
         "(≤7 days) into bronze_economic_times.conform_articles"
     ),
+    # Async scrape + Iceberg are memory-heavy; child crashes often = OOM under
+    # default multiprocess concurrency.
+    executor_def=dg.multiprocess_executor.configured({"max_concurrent": 1}),
 )
 
 
