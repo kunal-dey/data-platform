@@ -33,9 +33,19 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 
 def _load_module(module_name: str, filename: str):
+    # Put data_extraction after project root so `stock_news/` package is not
+    # shadowed by a same-named module under data_extraction/.
     data_extraction_dir = str(INGEST_TO_LANDING_DIR)
+    root = str(_PROJECT_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
     if data_extraction_dir not in sys.path:
-        sys.path.insert(0, data_extraction_dir)
+        # Insert just after project root
+        try:
+            idx = sys.path.index(root)
+            sys.path.insert(idx + 1, data_extraction_dir)
+        except ValueError:
+            sys.path.append(data_extraction_dir)
 
     path = INGEST_TO_LANDING_DIR / filename
     spec = spec_from_file_location(module_name, path)
@@ -68,7 +78,7 @@ class SchemaPrefixedDltTranslator(DagsterDltTranslator):
 
 _listings = _load_module("data_extraction.listings", "listings.py")
 _screener = _load_module("data_extraction.screener", "screener.py")
-_stock_news = _load_module("data_extraction.stock_news", "stock_news.py")
+_stock_news = _load_module("data_extraction.et_news", "et_news.py")
 _news_conform = _load_module("data_extraction.news_conform", "news_conform.py")
 listings_source = _listings.listings_source()
 screener_source = _screener.screener_source()

@@ -56,24 +56,24 @@ def listings_weekly_schedule():
 
 
 @dg.schedule(
-    name="screener_weekdays",
-    cron_schedule="0 18 * * 1-5",  # Mon–Fri 18:00 IST
+    name="screener_daily",
+    cron_schedule="30 12 * * *",  # Every day 12:30 IST
     job=screener_job,
     execution_timezone="Asia/Kolkata",
     default_status=dg.DefaultScheduleStatus.RUNNING,
 )
-def screener_weekdays_schedule():
+def screener_daily_schedule():
     return dg.RunRequest()
 
 
 @dg.schedule(
-    name="stock_news_weekdays",
-    cron_schedule="30 7 * * 1-5",  # Mon–Fri 07:30 IST
+    name="stock_news_daily",
+    cron_schedule="30 9 * * *",  # Every day 09:30 IST
     job=stock_news_job,
     execution_timezone="Asia/Kolkata",
     default_status=dg.DefaultScheduleStatus.RUNNING,
 )
-def stock_news_weekdays_schedule():
+def stock_news_daily_schedule():
     return dg.RunRequest()
 
 
@@ -83,7 +83,7 @@ def extraction_schedules():
         jobs=[listings_job, screener_job, stock_news_job],
         schedules=[
             listings_weekly_schedule,
-            screener_weekdays_schedule,
-            stock_news_weekdays_schedule,
+            screener_daily_schedule,
+            stock_news_daily_schedule,
         ],
     )

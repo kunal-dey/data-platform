@@ -12,10 +12,11 @@ from dotenv import load_dotenv
 
 _DATA_EXTRACTION_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _DATA_EXTRACTION_DIR.parent
-if str(_DATA_EXTRACTION_DIR) not in sys.path:
-    sys.path.insert(0, str(_DATA_EXTRACTION_DIR))
+# Project root first so `stock_news` resolves to the package, not a local module.
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+if str(_DATA_EXTRACTION_DIR) not in sys.path:
+    sys.path.insert(1, str(_DATA_EXTRACTION_DIR))
 
 load_dotenv(_PROJECT_ROOT / ".env")
 
