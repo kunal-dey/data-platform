@@ -4,6 +4,16 @@ requires-python = ">=3.10,<3.15"
 version = "0.1.0"
 dependencies = [
     "dagster==1.13.12",
+    "dagster-dlt>=0.29.12",
+    "dlt[filesystem,pyiceberg]>=1.28.1",
+    "ipykernel>=7.3.0",
+    "matplotlib>=3.10.9",
+    "networkx>=3.4.2",
+    "pandas>=2.3.3",
+    "pyiceberg[glue]>=0.11.1",
+    "runpod>=1.10.0",
+    "scrapy>=2.16.0",
+    "yfinance>=1.5.1",
 ]
 
 [dependency-groups]
@@ -28,4 +38,7 @@ registry_modules = [
     "data_platform.components.*",
 ]
 
+[tool.uv]
+# aiodns breaks async S3 DNS on Windows (pulled in via aiohttp speedups extra).
+override-dependencies = ["aiodns==1.0.0; python_version < '0'"]
 

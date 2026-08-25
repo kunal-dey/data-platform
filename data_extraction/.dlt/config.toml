@@ -1,0 +1,10 @@
+[runtime]
+log_level="WARNING"  # the system log level of dlt
+dlthub_telemetry = true
+
+[destination.filesystem.capabilities]
+register_new_tables = true
+table_location_layout = "{dataset_name}/{table_name}"
+
+[destination.filesystem.kwargs]
+asynchronous = false
