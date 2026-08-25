@@ -12,6 +12,13 @@ _SCREENER_TABLES = [
 ]
 _SCREENER_KEYS = [["bronze_screener", name] for name in _SCREENER_TABLES]
 
+# companies/articles first; conform_articles deps ensure it runs after articles
+_STOCK_NEWS_KEYS = [
+    ["bronze_economic_times", "companies"],
+    ["bronze_economic_times", "articles"],
+    ["bronze_economic_times", "conform_articles"],
+]
+
 listings_job = dg.define_asset_job(
     name="listings_job",
     selection=dg.AssetSelection.keys(["bronze_listings", "equity_universe"]),
@@ -22,6 +29,15 @@ screener_job = dg.define_asset_job(
     name="screener_job",
     selection=dg.AssetSelection.keys(*_SCREENER_KEYS),
     description="Load Screener period tables into bronze_screener.*",
+)
+
+stock_news_job = dg.define_asset_job(
+    name="stock_news_job",
+    selection=dg.AssetSelection.keys(*_STOCK_NEWS_KEYS),
+    description=(
+        "Scrape ET companies/articles, then LLM-conform new articles "
+        "(≤7 days) into bronze_economic_times.conform_articles"
+    ),
 )
 
 
@@ -47,9 +63,24 @@ def screener_weekdays_schedule():
     return dg.RunRequest()
 
 
+@dg.schedule(
+    name="stock_news_weekdays",
+    cron_schedule="30 7 * * 1-5",  # Mon–Fri 07:30 IST
+    job=stock_news_job,
+    execution_timezone="Asia/Kolkata",
+    default_status=dg.DefaultScheduleStatus.RUNNING,
+)
+def stock_news_weekdays_schedule():
+    return dg.RunRequest()
+
+
 @dg.definitions
 def extraction_schedules():
     return dg.Definitions(
-        jobs=[listings_job, screener_job],
-        schedules=[listings_weekly_schedule, screener_weekdays_schedule],
+        jobs=[listings_job, screener_job, stock_news_job],
+        schedules=[
+            listings_weekly_schedule,
+            screener_weekdays_schedule,
+            stock_news_weekdays_schedule,
+        ],
     )

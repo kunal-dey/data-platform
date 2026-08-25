@@ -3,6 +3,7 @@ name = "data_platform"
 requires-python = ">=3.10,<3.15"
 version = "0.1.0"
 dependencies = [
+    "aiohttp>=3.11.0",
     "dagster==1.13.12",
     "dagster-dlt>=0.29.12",
     "dlt[filesystem,pyiceberg]>=1.28.1",
@@ -10,7 +11,11 @@ dependencies = [
     "ipykernel>=7.3.0",
     "nselib>=2.5.1",
     "pandas>=2.3.3",
+    "pydantic>=2.0",
+    "pydantic-ai>=0.0.50",
     "pyiceberg[glue]>=0.11.1",
+    "requests>=2.32.0",
+    "runpod>=1.7.0",
     "selectolax>=0.3.27",
     "tenacity>=9.1.4",
 ]
