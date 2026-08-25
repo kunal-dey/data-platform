@@ -19,7 +19,10 @@ if str(_DATA_EXTRACTION_DIR) not in sys.path:
 load_dotenv(_DATA_EXTRACTION_DIR.parent / ".env")
 
 from utils.dlt_lake_config import filesystem_destination  # noqa: E402
-from utils.stock_news_fetch import fetch_stock_news_tables  # noqa: E402
+from utils.stock_news_fetch import (  # noqa: E402
+    fetch_articles_for_companies,
+    fetch_companies,
+)
 
 DEFAULT_DATASET = "bronze_economic_times"
 
@@ -41,13 +44,17 @@ def stock_news_source(limit: int | None = None):
         raw = os.getenv("STOCK_NEWS_LIMIT", "").strip()
         limit = int(raw) if raw else None
 
-    cache: dict[str, Any] = {"tables": None, "ingested_at": None}
+    # Shared across resources in the same process (in_process executor).
+    cache: dict[str, Any] = {
+        "companies": None,
+        "articles": None,
+        "ingested_at": None,
+    }
 
-    def tables() -> dict[str, pd.DataFrame]:
-        if cache["tables"] is None:
-            cache["tables"] = fetch_stock_news_tables(limit=limit)
-            cache["ingested_at"] = datetime.now(timezone.utc)
-        return cache["tables"]
+    def companies_df() -> pd.DataFrame:
+        if cache["companies"] is None:
+            cache["companies"] = fetch_companies(limit=limit)
+        return cache["companies"]
 
     @dlt.resource(
         name="companies",
@@ -55,7 +62,8 @@ def stock_news_source(limit: int | None = None):
         table_format="iceberg",
     )
     def companies() -> Iterator[dict[str, Any]]:
-        yield from _records(tables()["companies"])
+        # Index-only — do not scrape news here (was OOM'ing Dagster children).
+        yield from _records(companies_df())
 
     @dlt.resource(
         name="articles",
@@ -72,7 +80,10 @@ def stock_news_source(limit: int | None = None):
         },
     )
     def articles() -> Iterator[dict[str, Any]]:
-        yield from _records(tables()["articles"], ingested_at=cache["ingested_at"])
+        if cache["articles"] is None:
+            cache["articles"] = fetch_articles_for_companies(companies_df())
+            cache["ingested_at"] = datetime.now(timezone.utc)
+        yield from _records(cache["articles"], ingested_at=cache["ingested_at"])
 
     return [companies, articles]
 

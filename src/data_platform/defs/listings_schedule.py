@@ -38,9 +38,9 @@ stock_news_job = dg.define_asset_job(
         "Scrape ET companies/articles, then LLM-conform new articles "
         "(≤7 days) into bronze_economic_times.conform_articles"
     ),
-    # Async scrape + Iceberg are memory-heavy; child crashes often = OOM under
-    # default multiprocess concurrency.
-    executor_def=dg.multiprocess_executor.configured({"max_concurrent": 1}),
+    # Avoid multiprocess children: on small EC2 (~1GB) the kernel OOM-kills
+    # them (SIGKILL / -9), which Dagster surfaces as ChildProcessCrashException.
+    executor_def=dg.in_process_executor,
 )
 
 
