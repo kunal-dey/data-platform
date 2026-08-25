@@ -57,7 +57,7 @@ def listings_weekly_schedule():
 
 @dg.schedule(
     name="screener_daily",
-    cron_schedule="30 12 * * *",  # Every day 12:30 IST
+    cron_schedule="15 0 * * *",  # Every day 00:15 IST
     job=screener_job,
     execution_timezone="Asia/Kolkata",
     default_status=dg.DefaultScheduleStatus.RUNNING,
