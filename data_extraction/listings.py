@@ -16,6 +16,7 @@ if str(_DATA_EXTRACTION_DIR) not in sys.path:
 
 load_dotenv(_DATA_EXTRACTION_DIR.parent / ".env")
 
+from utils.dlt_lake_config import filesystem_destination  # noqa: E402
 from utils.listings_fetch import fetch_universe  # noqa: E402
 
 DEFAULT_DATASET = "bronze_listings"
@@ -40,7 +41,7 @@ if __name__ == "__main__":
     print(
         dlt.pipeline(
             pipeline_name="listings",
-            destination="filesystem",
+            destination=filesystem_destination(),
             dataset_name=DEFAULT_DATASET,
         ).run(listings_source())
     )
