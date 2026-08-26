@@ -9,7 +9,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import dlt
-from dagster import AssetExecutionContext, AssetKey, AssetSpec
+from dagster import AssetExecutionContext, AssetKey, AssetSpec, MaterializeResult
 from dagster_dlt import DagsterDltResource, DagsterDltTranslator, dlt_assets
 from dagster_dlt.translator import DltResourceTranslatorData
 from dlt.common.runtime.run_context import switch_context
@@ -154,6 +154,23 @@ def screener_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
     ),
 )
 def stock_news_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
+    selected = {key.path[-1] for key in context.selected_asset_keys}
+    # One batch extract→load→GC at a time (default). Full in-memory scrape if STOCK_NEWS_BATCHED=0.
+    if selected == {"articles"} and _stock_news._batched_enabled():
+        summary = _stock_news.load_articles_batched(
+            _stock_news_pipeline,
+            logger=context.log,
+        )
+        yield MaterializeResult(
+            asset_key=AssetKey([STOCK_NEWS_SCHEMA, "articles"]),
+            metadata={
+                "batch_mode": summary["batch_mode"],
+                "batch_size": summary["batch_size"],
+                "batches": summary["batches"],
+                "articles_loaded": summary["articles_loaded"],
+            },
+        )
+        return
     yield from dlt.run(context=context)
 
 

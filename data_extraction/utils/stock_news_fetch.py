@@ -32,6 +32,9 @@ TIMEOUT = int(os.getenv("STOCK_NEWS_TIMEOUT", "30"))
 # How many company fetches to schedule at once (semaphore still caps in-flight).
 EXTRACT_CHUNK = int(os.getenv("STOCK_NEWS_EXTRACT_CHUNK", "25"))
 EXISTING_URL_BATCH = int(os.getenv("STOCK_NEWS_EXISTING_URL_BATCH", "100"))
+# company = N companies per extract→load cycle; letter = one ET index page per cycle.
+BATCH_MODE = os.getenv("STOCK_NEWS_BATCH_MODE", "company").strip().lower()
+BATCH_SIZE = int(os.getenv("STOCK_NEWS_BATCH_SIZE", "5"))
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -135,6 +138,54 @@ def fetch_companies(*, limit: int | None = None, proxy: str | None = None) -> pd
     if not rows:
         raise RuntimeError("No ET companies found")
     return pd.DataFrame(rows)
+
+
+def iter_companies_by_letter(
+    *,
+    limit: int | None = None,
+    proxy: str | None = None,
+):
+    """Yield ``(index_label, companies_df)`` per ET stock-quotes index page."""
+    proxy = proxy if proxy is not None else _proxy()
+    s = _session(proxy)
+    indexes = _indexes(_get(s, QUOTES, pause=False))
+    log.info("ET company indexes: %s", len(indexes))
+    remaining = None if limit is None else int(limit)
+    seen: set[str] = set()
+    for url in indexes:
+        if remaining is not None and remaining <= 0:
+            break
+        page = _parse_companies(_get(s, url))
+        rows = []
+        for c in page:
+            cid = c["company_id"]
+            if cid in seen:
+                continue
+            seen.add(cid)
+            rows.append(c)
+            if remaining is not None:
+                remaining -= 1
+                if remaining <= 0:
+                    break
+        label = url.rsplit("/", 1)[-1]
+        log.info("%s: %s companies (batch)", label, len(rows))
+        if rows:
+            yield label, pd.DataFrame(rows)
+
+
+def iter_company_batches(
+    companies_df: pd.DataFrame,
+    *,
+    batch_size: int | None = None,
+):
+    """Yield ``(label, batch_df)`` slices of a companies DataFrame."""
+    size = max(1, int(batch_size if batch_size is not None else BATCH_SIZE))
+    rows = companies_df.to_dict(orient="records")
+    total = len(rows)
+    for start in range(0, total, size):
+        end = min(start + size, total)
+        label = f"companies_{start + 1}-{end}_of_{total}"
+        yield label, pd.DataFrame(rows[start:end])
 
 
 def _parse_news(html: str, company: dict[str, str]) -> list[dict[str, str]]:
