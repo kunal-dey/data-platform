@@ -28,6 +28,7 @@ from utils.screener_fetch import (  # noqa: E402
     TABLE_NAMES,
     fetch_screener_tables,
     listing_symbols,
+    normalize_screener_frame,
 )
 
 DEFAULT_DATASET = "bronze_screener"
@@ -99,6 +100,11 @@ def iter_screener_batches(
     symbols = listing_symbols(limit=limit)
     total = len(symbols)
     lg.info("Batched screener load: symbols=%s batch_size=%s", total, size)
+    try:
+        pipeline.drop_pending_packages()
+        lg.info("Cleared stale dlt pending packages on screener pipeline (if any)")
+    except Exception as exc:
+        lg.warning("Could not drop pending dlt packages: %s", exc)
 
     batches_done = 0
     rows_loaded = 0
@@ -125,7 +131,8 @@ def iter_screener_batches(
         if batch_rows:
             tables = {
                 name: align_dataframe_to_iceberg_table(
-                    f"{DEFAULT_DATASET}.{name}", frame
+                    f"{DEFAULT_DATASET}.{name}",
+                    normalize_screener_frame(name, frame),
                 )
                 for name, frame in tables.items()
             }

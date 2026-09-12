@@ -66,6 +66,7 @@ _METRIC_ALIASES = {
     "equity capital": "equity_capital",
     "reserves": "reserves",
     "borrowings": "borrowings",
+    "borrowing": "borrowings",
     "other liabilities": "other_liabilities",
     "total liabilities": "total_liabilities",
     "fixed assets": "fixed_assets",
@@ -91,6 +92,112 @@ _METRIC_ALIASES = {
     "public": "public_pct",
     "no. of shareholders": "shareholders",
 }
+
+# Stable metric columns per Iceberg table (Screener label variants are normalized here).
+TABLE_METRIC_COLUMNS: dict[str, tuple[str, ...]] = {
+    "quarterly_results": (
+        "sales",
+        "expenses",
+        "operating_profit",
+        "opm_pct",
+        "other_income",
+        "interest",
+        "depreciation",
+        "profit_before_tax",
+        "tax_pct",
+        "net_profit",
+        "eps",
+        "dividend_payout_pct",
+    ),
+    "profit_loss": (
+        "sales",
+        "expenses",
+        "operating_profit",
+        "opm_pct",
+        "other_income",
+        "interest",
+        "depreciation",
+        "profit_before_tax",
+        "tax_pct",
+        "net_profit",
+        "eps",
+        "dividend_payout_pct",
+    ),
+    "balance_sheet": (
+        "equity_capital",
+        "reserves",
+        "borrowings",
+        "other_liabilities",
+        "total_liabilities",
+        "fixed_assets",
+        "cwip",
+        "investments",
+        "other_assets",
+        "total_assets",
+    ),
+    "cash_flow": (
+        "cash_from_operating",
+        "cash_from_investing",
+        "cash_from_financing",
+        "net_cash_flow",
+    ),
+    "ratios": (
+        "debtor_days",
+        "inventory_days",
+        "days_payable",
+        "cash_conversion_cycle",
+        "working_capital_days",
+        "roce_pct",
+        "roe",
+    ),
+    "shareholding_quarterly": (
+        "promoters_pct",
+        "fiis_pct",
+        "diis_pct",
+        "public_pct",
+        "shareholders",
+    ),
+    "shareholding_yearly": (
+        "promoters_pct",
+        "fiis_pct",
+        "diis_pct",
+        "public_pct",
+        "shareholders",
+    ),
+}
+
+_METRIC_COLUMN_SYNONYMS = {
+    "borrowing": "borrowings",
+}
+
+
+def normalize_screener_frame(table_name: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Rename synonym metrics and restrict to the canonical column set per table."""
+    if df.empty:
+        return df
+    out = df.copy()
+    for src, dst in _METRIC_COLUMN_SYNONYMS.items():
+        if src not in out.columns:
+            continue
+        if dst in out.columns:
+            out[dst] = out[dst].combine_first(out[src])
+            out = out.drop(columns=[src])
+        else:
+            out = out.rename(columns={src: dst})
+
+    metrics = TABLE_METRIC_COLUMNS.get(table_name)
+    if not metrics:
+        return out
+
+    base = ("symbol", "financial_period")
+    extra = [c for c in out.columns if c not in base and c not in metrics]
+    if extra:
+        log.warning("Dropping non-canonical columns on %s: %s", table_name, extra)
+        out = out.drop(columns=extra)
+    for col in metrics:
+        if col not in out.columns:
+            out[col] = pd.NA
+    return out[list(base) + list(metrics)]
 
 
 def _proxy() -> str | None:
