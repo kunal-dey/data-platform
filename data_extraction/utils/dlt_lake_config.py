@@ -138,3 +138,25 @@ def align_dataframe_to_iceberg_table(table_fqn: str, df: pd.DataFrame) -> pd.Dat
         )
         out = out.drop(columns=extra)
     return out[data_cols]
+
+
+def screener_iceberg_metric_columns(
+    table_fqn: str,
+    *,
+    fallback: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Metric columns on an existing Iceberg table (excludes keys + ingested_at)."""
+    try:
+        catalog = load_glue_catalog()
+        iceberg_table = catalog.load_table(table_fqn)
+        metrics = [
+            field.name
+            for field in iceberg_table.schema().fields
+            if field.name not in _DLT_INTERNAL_COLS
+            and field.name not in {"symbol", "financial_period", "ingested_at"}
+        ]
+        if metrics:
+            return tuple(metrics)
+    except Exception:
+        pass
+    return fallback

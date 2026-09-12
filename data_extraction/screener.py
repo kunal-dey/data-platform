@@ -23,6 +23,7 @@ load_dotenv(_DATA_EXTRACTION_DIR.parent / ".env")
 from utils.dlt_lake_config import (  # noqa: E402
     align_dataframe_to_iceberg_table,
     filesystem_destination,
+    screener_iceberg_metric_columns,
 )
 from utils.screener_fetch import (  # noqa: E402
     TABLE_METRIC_COLUMNS,
@@ -38,13 +39,24 @@ BATCH_SIZE = int(os.getenv("SCREENER_BATCH_SIZE", "25"))
 log = logging.getLogger(__name__)
 
 
-def _records(df: pd.DataFrame, *, ingested_at: datetime) -> list[dict[str, Any]]:
+def _records(
+    df: pd.DataFrame,
+    *,
+    ingested_at: datetime,
+    table_name: str,
+) -> list[dict[str, Any]]:
     if df.empty:
         return []
-    rows = df.astype(object).where(pd.notna(df), None).to_dict(orient="records")
+    allowed = set(_dlt_columns_for_table(table_name).keys())
+    cols = [c for c in df.columns if c in allowed]
+    slim = df[cols]
+    rows = slim.astype(object).where(pd.notna(slim), None).to_dict(orient="records")
+    out: list[dict[str, Any]] = []
     for row in rows:
-        row["ingested_at"] = ingested_at
-    return rows
+        record = {k: row[k] for k in cols}
+        record["ingested_at"] = ingested_at
+        out.append(record)
+    return out
 
 
 def _limit_from_env(limit: int | None) -> int | None:
@@ -63,22 +75,37 @@ def _batched_enabled() -> bool:
 
 
 def _dlt_columns_for_table(table_name: str) -> dict[str, Any]:
-    """Fixed dlt schema so Iceberg merge never sees stray Screener metrics."""
+    """dlt + Iceberg schema: match existing table metrics when present."""
+    fqn = f"{DEFAULT_DATASET}.{table_name}"
+    fallback = TABLE_METRIC_COLUMNS.get(table_name, ())
+    metrics = screener_iceberg_metric_columns(fqn, fallback=fallback)
     cols: dict[str, Any] = {
         "symbol": {"data_type": "text", "nullable": False},
         "financial_period": {"data_type": "text", "nullable": False},
         "ingested_at": {"data_type": "timestamp"},
     }
-    for metric in TABLE_METRIC_COLUMNS.get(table_name, ()):
+    for metric in metrics:
         cols[metric] = {"data_type": "double"}
     return cols
 
 
 def _prepare_table_frame(table_name: str, frame: pd.DataFrame) -> pd.DataFrame:
-    return align_dataframe_to_iceberg_table(
-        f"{DEFAULT_DATASET}.{table_name}",
-        normalize_screener_frame(table_name, frame),
+    fqn = f"{DEFAULT_DATASET}.{table_name}"
+    frame = normalize_screener_frame(table_name, frame)
+    metrics = screener_iceberg_metric_columns(
+        fqn, fallback=TABLE_METRIC_COLUMNS.get(table_name, ())
     )
+    base = ["symbol", "financial_period"]
+    allowed = base + list(metrics)
+    extra = [c for c in frame.columns if c not in allowed]
+    if extra:
+        log.warning("Prepare %s: dropping columns %s", table_name, extra)
+        frame = frame.drop(columns=extra)
+    for col in metrics:
+        if col not in frame.columns:
+            frame[col] = pd.NA
+    frame = frame[allowed]
+    return align_dataframe_to_iceberg_table(fqn, frame)
 
 
 def _screener_table_resource(
@@ -87,15 +114,18 @@ def _screener_table_resource(
     *,
     ingested_at: datetime,
 ):
+    columns = _dlt_columns_for_table(table_name)
+
     @dlt.resource(
         name=table_name,
         primary_key=PK,
         write_disposition={"disposition": "merge", "strategy": "upsert"},
         table_format="iceberg",
-        columns=_dlt_columns_for_table(table_name),
+        columns=columns,
+        schema_contract={"columns": "discard_value"},
     )
     def _table() -> Iterator[dict[str, Any]]:
-        yield from _records(frame, ingested_at=ingested_at)
+        yield from _records(frame, ingested_at=ingested_at, table_name=table_name)
 
     return _table
 
@@ -117,7 +147,10 @@ def _load_screener_tables(
         prepared = _prepare_table_frame(table_name, frame)
         if prepared.empty:
             continue
-        info = pipeline.run(_screener_table_resource(table_name, prepared, ingested_at=ingested_at))
+        info = pipeline.run(
+            _screener_table_resource(table_name, prepared, ingested_at=ingested_at),
+            schema_contract={"columns": "discard_value"},
+        )
         lg.info("Loaded %s: %s rows (%s)", table_name, len(prepared), info)
         load_infos.append(info)
     return load_infos
@@ -259,18 +292,25 @@ def screener_source(
         return cache["tables"]
 
     def make_resource(table_name: str):
+        columns = _dlt_columns_for_table(table_name)
+
         @dlt.resource(
             name=table_name,
             primary_key=PK,
             write_disposition={"disposition": "merge", "strategy": "upsert"},
             table_format="iceberg",
-            columns=_dlt_columns_for_table(table_name),
+            columns=columns,
+            schema_contract={"columns": "discard_value"},
         )
         def _table() -> Iterator[dict[str, Any]]:
             frame = _prepare_table_frame(
                 table_name, tables().get(table_name, pd.DataFrame())
             )
-            yield from _records(frame, ingested_at=cache["ingested_at"])
+            yield from _records(
+                frame,
+                ingested_at=cache["ingested_at"],
+                table_name=table_name,
+            )
 
         return _table
 
