@@ -22,4 +22,11 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
 
           script: |
-            bash ~/data-platform/scripts/deploy-ec2.sh
+            cd ~/data-platform
+
+            git pull origin main
+
+            ~/.local/bin/uv sync --frozen
+
+            sudo systemctl restart dagster-webserver
+            sudo systemctl restart dagster-daemon
