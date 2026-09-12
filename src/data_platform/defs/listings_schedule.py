@@ -40,7 +40,9 @@ def listings_weekly_schedule():
     default_status=dg.DefaultScheduleStatus.RUNNING,
 )
 def screener_daily_schedule():
-    return dg.RunRequest()
+    return dg.RunRequest(
+        tags={"dagster/concurrency_key": "screener_job"},
+    )
 
 
 @dg.schedule(

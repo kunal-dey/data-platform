@@ -1,0 +1,15 @@
+# Copy to DAGSTER_HOME on EC2 (e.g. ~/.dagster/dagster.yaml) so only one
+# screener_job runs at a time (matches dagster/concurrency_key on the schedule).
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 2
+
+concurrency:
+  runs:
+    tag_concurrency_limits:
+      - key: dagster/concurrency_key
+        value: screener_job
+        limit: 1

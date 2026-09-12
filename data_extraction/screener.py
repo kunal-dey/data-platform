@@ -99,8 +99,8 @@ def iter_screener_batches(
 
     batches_done = 0
     rows_loaded = 0
-    ingested_at = datetime.now(timezone.utc)
     for start in range(0, total, size):
+        ingested_at = datetime.now(timezone.utc)
         end = min(start + size, total)
         batch_syms = symbols[start:end]
         label = f"symbols_{start + 1}-{end}_of_{total}"

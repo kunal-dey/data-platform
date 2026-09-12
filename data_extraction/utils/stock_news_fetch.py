@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -301,6 +302,42 @@ async def _extract_async(
     return out
 
 
+def _normalize_company_names(raw: Any) -> list[str]:
+    """Flatten companies from Iceberg (list or nested JSON strings)."""
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        text = name.strip()
+        if not text or text.lower() in seen:
+            return
+        seen.add(text.lower())
+        names.append(text)
+
+    def walk(value: Any) -> None:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                add(text)
+                return
+            walk(parsed)
+            return
+        add(text)
+
+    walk(raw)
+    return names
+
+
 def _collapse_by_url(items: list[dict[str, str]]) -> list[dict[str, Any]]:
     batch: dict[str, dict[str, Any]] = {}
     for item in items:
@@ -389,12 +426,7 @@ def _existing_article_companies(urls: set[str]) -> dict[str, list[str]]:
         for url, companies in zip(url_col, co_col):
             if not url:
                 continue
-            names: list[str] = []
-            if isinstance(companies, list):
-                names = [str(x).strip() for x in companies if str(x).strip()]
-            elif isinstance(companies, str) and companies.strip():
-                names = [companies.strip()]
-            out[str(url).strip()] = names
+            out[str(url).strip()] = _normalize_company_names(companies)
     return out
 
 
