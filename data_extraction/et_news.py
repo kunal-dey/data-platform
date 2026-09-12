@@ -27,7 +27,6 @@ from utils.stock_news_fetch import (  # noqa: E402
     fetch_articles_for_companies,
     fetch_companies,
     iter_companies_by_letter,
-    iter_company_batches,
 )
 
 DEFAULT_DATASET = "bronze_economic_times"

@@ -1,9 +1,5 @@
-import asyncio
 import os
 import sys
-
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -27,25 +23,11 @@ STOCK_NEWS_SCHEMA = "bronze_economic_times"
 
 load_dotenv(_PROJECT_ROOT / ".env")
 
-# stock_news / services packages live at project root
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
 
 def _load_module(module_name: str, filename: str):
-    # Put data_extraction after project root so `stock_news/` package is not
-    # shadowed by a same-named module under data_extraction/.
     data_extraction_dir = str(INGEST_TO_LANDING_DIR)
-    root = str(_PROJECT_ROOT)
-    if root not in sys.path:
-        sys.path.insert(0, root)
     if data_extraction_dir not in sys.path:
-        # Insert just after project root
-        try:
-            idx = sys.path.index(root)
-            sys.path.insert(idx + 1, data_extraction_dir)
-        except ValueError:
-            sys.path.append(data_extraction_dir)
+        sys.path.insert(0, data_extraction_dir)
 
     path = INGEST_TO_LANDING_DIR / filename
     spec = spec_from_file_location(module_name, path)
@@ -79,16 +61,13 @@ class SchemaPrefixedDltTranslator(DagsterDltTranslator):
 _listings = _load_module("data_extraction.listings", "listings.py")
 _screener = _load_module("data_extraction.screener", "screener.py")
 _stock_news = _load_module("data_extraction.et_news", "et_news.py")
-_news_conform = _load_module("data_extraction.news_conform", "news_conform.py")
 listings_source = _listings.listings_source()
 screener_source = _screener.screener_source()
 stock_news_source = _stock_news.stock_news_source()
-news_conform_source = _news_conform.news_conform_source()
 
 switch_context(str(INGEST_TO_LANDING_DIR))
 os.environ.pop("PYICEBERG_HOME", None)
 
-sys.path.insert(0, str(INGEST_TO_LANDING_DIR))
 from utils.dlt_lake_config import filesystem_destination  # noqa: E402
 
 _destination = filesystem_destination()
@@ -105,11 +84,6 @@ _screener_pipeline = dlt.pipeline(
 )
 _stock_news_pipeline = dlt.pipeline(
     pipeline_name="stock_news",
-    destination=_destination,
-    dataset_name=STOCK_NEWS_SCHEMA,
-)
-_news_conform_pipeline = dlt.pipeline(
-    pipeline_name="stock_news_conform",
     destination=_destination,
     dataset_name=STOCK_NEWS_SCHEMA,
 )
@@ -171,21 +145,4 @@ def stock_news_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
             },
         )
         return
-    yield from dlt.run(context=context)
-
-
-@dlt_assets(
-    dlt_source=news_conform_source,
-    dlt_pipeline=_news_conform_pipeline,
-    name="news_conform",
-    group_name="data_extraction",
-    dagster_dlt_translator=SchemaPrefixedDltTranslator(
-        STOCK_NEWS_SCHEMA,
-        deps=[
-            AssetKey([STOCK_NEWS_SCHEMA, "articles"]),
-            AssetKey([LISTINGS_SCHEMA, "equity_universe"]),
-        ],
-    ),
-)
-def news_conform_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
     yield from dlt.run(context=context)

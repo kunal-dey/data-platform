@@ -1,46 +1,21 @@
 import dagster as dg
 
-# Keep in sync with data_extraction/utils/screener_fetch.TABLE_NAMES
-_SCREENER_TABLES = [
-    "quarterly_results",
-    "profit_loss",
-    "balance_sheet",
-    "cash_flow",
-    "ratios",
-    "shareholding_quarterly",
-    "shareholding_yearly",
-]
-_SCREENER_KEYS = [["bronze_screener", name] for name in _SCREENER_TABLES]
-
-# companies/articles first; conform_articles deps ensure it runs after articles
-_STOCK_NEWS_KEYS = [
-    ["bronze_economic_times", "companies"],
-    ["bronze_economic_times", "articles"],
-    ["bronze_economic_times", "conform_articles"],
-]
-
 listings_job = dg.define_asset_job(
     name="listings_job",
-    selection=dg.AssetSelection.keys(["bronze_listings", "equity_universe"]),
+    selection=dg.AssetSelection.key_prefixes(["bronze_listings"]),
     description="Load NSE/BSE equity listings into bronze_listings.equity_universe",
 )
 
 screener_job = dg.define_asset_job(
     name="screener_job",
-    selection=dg.AssetSelection.keys(*_SCREENER_KEYS),
+    selection=dg.AssetSelection.key_prefixes(["bronze_screener"]),
     description="Load Screener period tables into bronze_screener.*",
 )
 
 stock_news_job = dg.define_asset_job(
     name="stock_news_job",
-    selection=dg.AssetSelection.keys(*_STOCK_NEWS_KEYS),
-    description=(
-        "Scrape ET companies/articles, then LLM-conform new articles "
-        "(≤7 days) into bronze_economic_times.conform_articles"
-    ),
-    # Avoid multiprocess children: on small EC2 (~1GB) the kernel OOM-kills
-    # them (SIGKILL / -9), which Dagster surfaces as ChildProcessCrashException.
-    executor_def=dg.in_process_executor,
+    selection=dg.AssetSelection.key_prefixes(["bronze_economic_times"]),
+    description="Scrape ET companies/articles into bronze_economic_times.*",
 )
 
 

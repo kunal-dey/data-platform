@@ -48,9 +48,6 @@ HEADERS = {
 CO_RE = re.compile(r"/stocks/companyid-(\d+)\.cms", re.I)
 IDX_RE = re.compile(r"/markets/stocks/stock-quotes/([a-z]|\d|numeric-\d)/?$", re.I)
 
-TABLE_NAMES = ["companies", "articles"]
-
-
 def _proxy() -> str | None:
     return (
         os.getenv("STOCK_NEWS_PROXY")
@@ -171,21 +168,6 @@ def iter_companies_by_letter(
         log.info("%s: %s companies (batch)", label, len(rows))
         if rows:
             yield label, pd.DataFrame(rows)
-
-
-def iter_company_batches(
-    companies_df: pd.DataFrame,
-    *,
-    batch_size: int | None = None,
-):
-    """Yield ``(label, batch_df)`` slices of a companies DataFrame."""
-    size = max(1, int(batch_size if batch_size is not None else BATCH_SIZE))
-    rows = companies_df.to_dict(orient="records")
-    total = len(rows)
-    for start in range(0, total, size):
-        end = min(start + size, total)
-        label = f"companies_{start + 1}-{end}_of_{total}"
-        yield label, pd.DataFrame(rows[start:end])
 
 
 def _parse_news(html: str, company: dict[str, str]) -> list[dict[str, str]]:
@@ -453,17 +435,3 @@ def fetch_articles_for_companies(
             columns=["url", "heading", "content", "date", "companies"]
         )
     return pd.DataFrame(articles)
-
-
-def fetch_stock_news_tables(
-    *,
-    limit: int | None = None,
-    concurrency: int | None = None,
-    proxy: str | None = None,
-) -> dict[str, pd.DataFrame]:
-    """Return ``{companies, articles}`` DataFrames for dlt / CLI."""
-    companies_df = fetch_companies(limit=limit, proxy=proxy)
-    articles_df = fetch_articles_for_companies(
-        companies_df, concurrency=concurrency, proxy=proxy
-    )
-    return {"companies": companies_df, "articles": articles_df}
