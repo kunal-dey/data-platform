@@ -106,8 +106,18 @@ def iter_screener_batches(
         label = f"symbols_{start + 1}-{end}_of_{total}"
         batches_done += 1
         lg.info("Batch %s (%s): fetch %s symbols", batches_done, label, len(batch_syms))
-        tables = fetch_screener_tables(symbols=batch_syms)
+        fetched = fetch_screener_tables(symbols=batch_syms)
+        tables = fetched.tables
+        stats = fetched.stats
         batch_rows = sum(len(df) for df in tables.values())
+        lg.info(
+            "Batch %s fetch stats: ok=%s skip=%s error=%s (of %s)",
+            batches_done,
+            stats.ok,
+            stats.skip,
+            stats.error,
+            stats.symbols_requested,
+        )
         load_info = None
         if batch_rows:
             load_info = pipeline.run(
@@ -134,6 +144,9 @@ def iter_screener_batches(
             "batches_total": (total + size - 1) // size if total else 0,
             "symbols_total": total,
             "batch_size": size,
+            "fetch_ok": stats.ok,
+            "fetch_skip": stats.skip,
+            "fetch_error": stats.error,
             "load_info": str(load_info) if load_info is not None else None,
         }
 
@@ -189,7 +202,9 @@ def screener_source(
 
     def tables() -> dict[str, pd.DataFrame]:
         if cache["tables"] is None:
-            cache["tables"] = fetch_screener_tables(symbols=symbols, limit=limit)
+            cache["tables"] = fetch_screener_tables(
+                symbols=symbols, limit=limit
+            ).tables
             cache["ingested_at"] = datetime.now(timezone.utc)
         return cache["tables"]
 

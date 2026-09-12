@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Iterable
 
 import httpx
@@ -236,14 +237,17 @@ def _extract_symbol(
     *,
     consolidated: bool = True,
     proxy: str | None = None,
+    skip_availability_check: bool = False,
 ) -> dict[str, pd.DataFrame]:
     sym = symbol.strip().upper()
     proxy = proxy if proxy is not None else _proxy()
 
     def _run(use_consolidated: bool) -> dict[str, pd.DataFrame]:
-        ok, url = _url_available(sym, consolidated=use_consolidated, proxy=proxy)
-        if not ok:
-            raise ValueError(f"Screener page not available for {sym}: {url}")
+        url = _company_url(sym, consolidated=use_consolidated)
+        if not skip_availability_check:
+            ok, url = _url_available(sym, consolidated=use_consolidated, proxy=proxy)
+            if not ok:
+                raise ValueError(f"Screener page not available for {sym}: {url}")
         log.info("Fetching %s", url)
         return _parse_company_tables(sym, _fetch_html(url, proxy=proxy))
 
@@ -267,16 +271,27 @@ def _extract_one(
 ) -> tuple[str, dict[str, pd.DataFrame] | None, str]:
     if pause_seconds > 0:
         time.sleep(pause_seconds)
-    ok, url = _url_available(symbol, consolidated=consolidated, proxy=proxy)
-    if not ok:
-        log.info("[%s/%s] skip %s %s", index, total, symbol, url)
-        return symbol, None, "skip"
-    try:
-        log.info("[%s/%s] extract %s", index, total, symbol)
-        return symbol, _extract_symbol(symbol, consolidated=consolidated, proxy=proxy), "ok"
-    except Exception as e:
-        log.warning("[%s/%s] error %s: %s", index, total, symbol, e)
-        return symbol, None, f"error: {e}"
+    # Many NSE tickers have no /consolidated/ page; standalone must be tried before skip.
+    modes = [True, False] if consolidated else [False]
+    last_url = _company_url(symbol, consolidated=modes[0])
+    for use_cons in modes:
+        ok, url = _url_available(symbol, consolidated=use_cons, proxy=proxy)
+        last_url = url
+        if not ok:
+            continue
+        try:
+            log.info("[%s/%s] extract %s (%s)", index, total, symbol, url)
+            tables = _extract_symbol(
+                symbol,
+                consolidated=use_cons,
+                proxy=proxy,
+                skip_availability_check=True,
+            )
+            return symbol, tables, "ok"
+        except Exception as e:
+            log.warning("[%s/%s] error %s (%s): %s", index, total, symbol, url, e)
+    log.info("[%s/%s] skip %s %s", index, total, symbol, last_url)
+    return symbol, None, "skip"
 
 
 def _accumulate_symbol_result(
@@ -333,6 +348,20 @@ def _frames_from_buckets(buckets: dict[str, list[pd.DataFrame]]) -> dict[str, pd
     }
 
 
+@dataclass(frozen=True)
+class ScreenerFetchStats:
+    ok: int
+    skip: int
+    error: int
+    symbols_requested: int
+
+
+@dataclass(frozen=True)
+class ScreenerFetchResult:
+    tables: dict[str, pd.DataFrame]
+    stats: ScreenerFetchStats
+
+
 def fetch_screener_tables(
     symbols: Iterable[str] | None = None,
     *,
@@ -340,8 +369,8 @@ def fetch_screener_tables(
     consolidated: bool = True,
     concurrency: int | None = None,
     pause_seconds: float | None = None,
-) -> dict[str, pd.DataFrame]:
-    """Scrape Screener; return {table_name: DataFrame}."""
+) -> ScreenerFetchResult:
+    """Scrape Screener; return tables plus ok/skip/error counts."""
     proxy = _proxy()
     syms = list(symbols) if symbols is not None else _listing_symbols(limit=limit)
     if limit is not None and symbols is not None:
@@ -362,4 +391,12 @@ def fetch_screener_tables(
     )
 
     log.info("Screener fetch done: ok=%s skip=%s error=%s", ok_n, skip_n, err_n)
-    return _frames_from_buckets(buckets)
+    return ScreenerFetchResult(
+        tables=_frames_from_buckets(buckets),
+        stats=ScreenerFetchStats(
+            ok=ok_n,
+            skip=skip_n,
+            error=err_n,
+            symbols_requested=total,
+        ),
+    )
