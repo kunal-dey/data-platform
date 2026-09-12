@@ -83,6 +83,8 @@ _METRIC_ALIASES = {
     "cash conversion cycle": "cash_conversion_cycle",
     "working capital days": "working_capital_days",
     "roce %": "roce_pct",
+    "roe %": "roe",
+    "roe": "roe",
     "promoters": "promoters_pct",
     "fiis": "fiis_pct",
     "diis": "diis_pct",

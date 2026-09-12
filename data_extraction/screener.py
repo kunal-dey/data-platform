@@ -20,7 +20,10 @@ if str(_DATA_EXTRACTION_DIR) not in sys.path:
 
 load_dotenv(_DATA_EXTRACTION_DIR.parent / ".env")
 
-from utils.dlt_lake_config import filesystem_destination  # noqa: E402
+from utils.dlt_lake_config import (  # noqa: E402
+    align_dataframe_to_iceberg_table,
+    filesystem_destination,
+)
 from utils.screener_fetch import (  # noqa: E402
     TABLE_NAMES,
     fetch_screener_tables,
@@ -120,6 +123,12 @@ def iter_screener_batches(
         )
         load_info = None
         if batch_rows:
+            tables = {
+                name: align_dataframe_to_iceberg_table(
+                    f"{DEFAULT_DATASET}.{name}", frame
+                )
+                for name, frame in tables.items()
+            }
             load_info = pipeline.run(
                 _screener_batch_source(tables, ingested_at=ingested_at)
             )

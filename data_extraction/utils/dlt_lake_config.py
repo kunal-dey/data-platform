@@ -5,11 +5,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import dlt
+import pandas as pd
 from dlt.destinations import filesystem
+
+log = logging.getLogger(__name__)
+_DLT_INTERNAL_COLS = frozenset({"_dlt_load_id", "_dlt_id"})
 
 
 def _require(name: str) -> str:
@@ -97,3 +102,39 @@ def load_equity_universe_symbols(*, exchange: str = "NSE", limit: int | None = N
             + " — run listings job first."
         )
     return symbols
+
+
+def align_dataframe_to_iceberg_table(table_fqn: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Match scrape columns to an existing Iceberg table so merge-upsert can run.
+
+    Screener HTML varies by company; without this, a new metric (e.g. ``roe`` on
+    ``ratios``) breaks dlt load with schema mismatch errors.
+    """
+    if df.empty:
+        return df
+    try:
+        catalog = load_glue_catalog()
+        iceberg_table = catalog.load_table(table_fqn)
+        dest_cols = [
+            field.name
+            for field in iceberg_table.schema().fields
+            if field.name not in _DLT_INTERNAL_COLS
+        ]
+    except Exception:
+        return df
+
+    # ``ingested_at`` is set in screener._records(), not in the scrape frame.
+    data_cols = [c for c in dest_cols if c != "ingested_at"]
+    out = df.copy()
+    for col in data_cols:
+        if col not in out.columns:
+            out[col] = pd.NA
+    extra = [c for c in out.columns if c not in data_cols]
+    if extra:
+        log.warning(
+            "Align %s: dropping columns not in Iceberg schema: %s",
+            table_fqn,
+            extra,
+        )
+        out = out.drop(columns=extra)
+    return out[data_cols]
