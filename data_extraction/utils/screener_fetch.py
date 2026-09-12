@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable
 
 import httpx
@@ -19,7 +18,7 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://www.screener.in"
 TIMEOUT = int(os.getenv("SCREENER_TIMEOUT", "30"))
-CONCURRENCY = int(os.getenv("SCREENER_CONCURRENCY", "4"))
+CONCURRENCY = int(os.getenv("SCREENER_CONCURRENCY", "1"))
 PAUSE = float(os.getenv("SCREENER_PAUSE", "0.25"))
 HEADERS = {
     "User-Agent": (
@@ -208,10 +207,14 @@ def _url_available(
     return True, url
 
 
-def _listing_symbols(*, limit: int | None = None) -> list[str]:
+def listing_symbols(*, limit: int | None = None) -> list[str]:
     """NSE symbols from bronze_listings.equity_universe (not live nselib)."""
     exchange = os.getenv("SCREENER_EXCHANGE", "NSE").strip().upper() or "NSE"
     return load_equity_universe_symbols(exchange=exchange, limit=limit)
+
+
+def _listing_symbols(*, limit: int | None = None) -> list[str]:
+    return listing_symbols(limit=limit)
 
 
 def _parse_company_tables(symbol: str, html: str) -> dict[str, pd.DataFrame]:
@@ -276,6 +279,60 @@ def _extract_one(
         return symbol, None, f"error: {e}"
 
 
+def _accumulate_symbol_result(
+    buckets: dict[str, list[pd.DataFrame]],
+    *,
+    tables: dict[str, pd.DataFrame] | None,
+    status: str,
+) -> str:
+    """Merge one symbol extract into buckets; return normalized status."""
+    if status == "ok" and tables:
+        for name, df in tables.items():
+            if not df.empty:
+                buckets[name].append(df)
+        return "ok"
+    if status == "skip":
+        return "skip"
+    return "error"
+
+
+def _fetch_symbol_results(
+    syms: list[str],
+    *,
+    consolidated: bool,
+    proxy: str | None,
+    pause: float,
+) -> tuple[dict[str, list[pd.DataFrame]], int, int, int]:
+    """Sequential fetch only — avoids ThreadPoolExecutor + Dagster signal issues."""
+    buckets: dict[str, list[pd.DataFrame]] = {name: [] for name in TABLE_NAMES}
+    ok_n = skip_n = err_n = 0
+    total = len(syms)
+    for i, sym in enumerate(syms, start=1):
+        _sym, tables, status = _extract_one(
+            sym,
+            index=i,
+            total=total,
+            consolidated=consolidated,
+            proxy=proxy,
+            pause_seconds=pause,
+        )
+        norm = _accumulate_symbol_result(buckets, tables=tables, status=status)
+        if norm == "ok":
+            ok_n += 1
+        elif norm == "skip":
+            skip_n += 1
+        else:
+            err_n += 1
+    return buckets, ok_n, skip_n, err_n
+
+
+def _frames_from_buckets(buckets: dict[str, list[pd.DataFrame]]) -> dict[str, pd.DataFrame]:
+    return {
+        name: pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+        for name, parts in buckets.items()
+    }
+
+
 def fetch_screener_tables(
     symbols: Iterable[str] | None = None,
     *,
@@ -289,45 +346,20 @@ def fetch_screener_tables(
     syms = list(symbols) if symbols is not None else _listing_symbols(limit=limit)
     if limit is not None and symbols is not None:
         syms = syms[: int(limit)]
-    workers = max(1, int(concurrency if concurrency is not None else CONCURRENCY))
     pause = PAUSE if pause_seconds is None else float(pause_seconds)
     total = len(syms)
-    log.info(
-        "Screener fetch: symbols=%s concurrency=%s pause=%ss",
-        total,
-        workers,
-        pause,
+    if concurrency is not None and int(concurrency) > 1:
+        log.warning(
+            "SCREENER_CONCURRENCY>1 is ignored (sequential fetch for Dagster stability)"
+        )
+    log.info("Screener fetch: symbols=%s pause=%ss", total, pause)
+
+    buckets, ok_n, skip_n, err_n = _fetch_symbol_results(
+        syms,
+        consolidated=consolidated,
+        proxy=proxy,
+        pause=pause,
     )
 
-    buckets: dict[str, list[pd.DataFrame]] = {name: [] for name in TABLE_NAMES}
-    ok_n = skip_n = err_n = 0
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [
-            pool.submit(
-                _extract_one,
-                sym,
-                index=i,
-                total=total,
-                consolidated=consolidated,
-                proxy=proxy,
-                pause_seconds=pause,
-            )
-            for i, sym in enumerate(syms, start=1)
-        ]
-        for fut in as_completed(futures):
-            _sym, tables, status = fut.result()
-            if status == "ok" and tables:
-                ok_n += 1
-                for name, df in tables.items():
-                    if not df.empty:
-                        buckets[name].append(df)
-            elif status == "skip":
-                skip_n += 1
-            else:
-                err_n += 1
-
     log.info("Screener fetch done: ok=%s skip=%s error=%s", ok_n, skip_n, err_n)
-    return {
-        name: pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-        for name, parts in buckets.items()
-    }
+    return _frames_from_buckets(buckets)

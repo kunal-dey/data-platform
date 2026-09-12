@@ -10,6 +10,8 @@ screener_job = dg.define_asset_job(
     name="screener_job",
     selection=dg.AssetSelection.key_prefixes(["bronze_screener"]),
     description="Load Screener period tables into bronze_screener.*",
+    # Full-universe scrape can run many hours on small EC2.
+    tags={"dagster/max_runtime": 86400},
 )
 
 stock_news_job = dg.define_asset_job(

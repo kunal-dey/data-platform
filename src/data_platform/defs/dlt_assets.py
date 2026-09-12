@@ -1,11 +1,18 @@
 import os
 import sys
+from typing import Any
 
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import dlt
-from dagster import AssetExecutionContext, AssetKey, AssetSpec, MaterializeResult
+from dagster import (
+    AssetExecutionContext,
+    AssetKey,
+    AssetObservation,
+    AssetSpec,
+    MaterializeResult,
+)
 from dagster_dlt import DagsterDltResource, DagsterDltTranslator, dlt_assets
 from dagster_dlt.translator import DltResourceTranslatorData
 from dlt.common.runtime.run_context import switch_context
@@ -111,7 +118,40 @@ def listings_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
     ),
 )
 def screener_assets(context: AssetExecutionContext, dlt: DagsterDltResource):
-    yield from dlt.run(context=context)
+    # Never use dagster_dlt.run here: it triggers one giant in-process scrape and
+    # conflicts with Dagster's interrupt handler (ThreadPoolExecutor on old code).
+    del dlt
+    selected = {key.path[-1] for key in context.selected_asset_keys}
+    table_names = set(_screener.TABLE_NAMES)
+    if not selected:
+        selected = table_names
+    progress_key = AssetKey([SCREENER_SCHEMA, sorted(selected)[0]])
+
+    summary: dict[str, Any] | None = None
+    for batch in _screener.iter_screener_batches(
+        _screener_pipeline,
+        logger=context.log,
+    ):
+        yield AssetObservation(asset_key=progress_key, metadata=batch)
+        summary = {
+            "batch_size": batch["batch_size"],
+            "batches": batch["batch"],
+            "symbols": batch["symbols_total"],
+            "rows_loaded": batch["rows_loaded_total"],
+        }
+
+    if summary is None:
+        summary = {
+            "batch_size": _screener.BATCH_SIZE,
+            "batches": 0,
+            "symbols": 0,
+            "rows_loaded": 0,
+        }
+    for name in sorted(selected):
+        yield MaterializeResult(
+            asset_key=AssetKey([SCREENER_SCHEMA, name]),
+            metadata=summary,
+        )
 
 
 @dlt_assets(
