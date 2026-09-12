@@ -52,6 +52,7 @@ _PERIOD_RE = re.compile(
 )
 _METRIC_ALIASES = {
     "sales": "sales",
+    "revenue": "sales",
     "expenses": "expenses",
     "operating profit": "operating_profit",
     "opm %": "opm_pct",
@@ -168,6 +169,7 @@ TABLE_METRIC_COLUMNS: dict[str, tuple[str, ...]] = {
 
 _METRIC_COLUMN_SYNONYMS = {
     "borrowing": "borrowings",
+    "revenue": "sales",
 }
 
 

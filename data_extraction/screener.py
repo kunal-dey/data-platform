@@ -25,6 +25,7 @@ from utils.dlt_lake_config import (  # noqa: E402
     filesystem_destination,
 )
 from utils.screener_fetch import (  # noqa: E402
+    TABLE_METRIC_COLUMNS,
     TABLE_NAMES,
     fetch_screener_tables,
     listing_symbols,
@@ -61,29 +62,65 @@ def _batched_enabled() -> bool:
     )
 
 
-def _screener_batch_source(
-    tables: dict[str, pd.DataFrame], *, ingested_at: datetime
+def _dlt_columns_for_table(table_name: str) -> dict[str, Any]:
+    """Fixed dlt schema so Iceberg merge never sees stray Screener metrics."""
+    cols: dict[str, Any] = {
+        "symbol": {"data_type": "text", "nullable": False},
+        "financial_period": {"data_type": "text", "nullable": False},
+        "ingested_at": {"data_type": "timestamp"},
+    }
+    for metric in TABLE_METRIC_COLUMNS.get(table_name, ()):
+        cols[metric] = {"data_type": "double"}
+    return cols
+
+
+def _prepare_table_frame(table_name: str, frame: pd.DataFrame) -> pd.DataFrame:
+    return align_dataframe_to_iceberg_table(
+        f"{DEFAULT_DATASET}.{table_name}",
+        normalize_screener_frame(table_name, frame),
+    )
+
+
+def _screener_table_resource(
+    table_name: str,
+    frame: pd.DataFrame,
+    *,
+    ingested_at: datetime,
 ):
-    def make_resource(table_name: str):
-        @dlt.resource(
-            name=table_name,
-            primary_key=PK,
-            write_disposition={"disposition": "merge", "strategy": "upsert"},
-            table_format="iceberg",
-        )
-        def _table() -> Iterator[dict[str, Any]]:
-            yield from _records(
-                tables.get(table_name, pd.DataFrame()),
-                ingested_at=ingested_at,
-            )
+    @dlt.resource(
+        name=table_name,
+        primary_key=PK,
+        write_disposition={"disposition": "merge", "strategy": "upsert"},
+        table_format="iceberg",
+        columns=_dlt_columns_for_table(table_name),
+    )
+    def _table() -> Iterator[dict[str, Any]]:
+        yield from _records(frame, ingested_at=ingested_at)
 
-        return _table
+    return _table
 
-    @dlt.source(name="screener")
-    def _source():
-        return [make_resource(name) for name in TABLE_NAMES]
 
-    return _source()
+def _load_screener_tables(
+    pipeline: dlt.Pipeline,
+    tables: dict[str, pd.DataFrame],
+    *,
+    ingested_at: datetime,
+    logger: logging.Logger | None = None,
+) -> list[Any]:
+    """Load each Iceberg table in its own dlt run (avoids cross-table schema bleed)."""
+    lg = logger or log
+    load_infos: list[Any] = []
+    for table_name in TABLE_NAMES:
+        frame = tables.get(table_name, pd.DataFrame())
+        if frame.empty:
+            continue
+        prepared = _prepare_table_frame(table_name, frame)
+        if prepared.empty:
+            continue
+        info = pipeline.run(_screener_table_resource(table_name, prepared, ingested_at=ingested_at))
+        lg.info("Loaded %s: %s rows (%s)", table_name, len(prepared), info)
+        load_infos.append(info)
+    return load_infos
 
 
 def iter_screener_batches(
@@ -129,23 +166,20 @@ def iter_screener_batches(
         )
         load_info = None
         if batch_rows:
-            tables = {
-                name: align_dataframe_to_iceberg_table(
-                    f"{DEFAULT_DATASET}.{name}",
-                    normalize_screener_frame(name, frame),
-                )
-                for name, frame in tables.items()
-            }
-            load_info = pipeline.run(
-                _screener_batch_source(tables, ingested_at=ingested_at)
+            load_infos = _load_screener_tables(
+                pipeline,
+                tables,
+                ingested_at=ingested_at,
+                logger=lg,
             )
+            load_info = load_infos[-1] if load_infos else None
             rows_loaded += batch_rows
             lg.info(
-                "Batch %s (%s): loaded %s rows (%s)",
+                "Batch %s (%s): loaded %s rows across %s tables",
                 batches_done,
                 label,
                 batch_rows,
-                load_info,
+                len(load_infos),
             )
         else:
             lg.info("Batch %s (%s): no rows", batches_done, label)
@@ -230,12 +264,13 @@ def screener_source(
             primary_key=PK,
             write_disposition={"disposition": "merge", "strategy": "upsert"},
             table_format="iceberg",
+            columns=_dlt_columns_for_table(table_name),
         )
         def _table() -> Iterator[dict[str, Any]]:
-            yield from _records(
-                tables().get(table_name, pd.DataFrame()),
-                ingested_at=cache["ingested_at"],
+            frame = _prepare_table_frame(
+                table_name, tables().get(table_name, pd.DataFrame())
             )
+            yield from _records(frame, ingested_at=cache["ingested_at"])
 
         return _table
 
