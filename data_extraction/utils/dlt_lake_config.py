@@ -7,14 +7,27 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Sequence
 
 import dlt
 import pandas as pd
+from dlt.common.schema.exceptions import TableNotFound
+from dlt.common.schema.utils import is_dlt_table_or_column
+from dlt.common.storages.exceptions import SchemaNotFoundError
 from dlt.destinations import filesystem
 
 log = logging.getLogger(__name__)
 _DLT_INTERNAL_COLS = frozenset({"_dlt_load_id", "_dlt_id"})
+# Screener bank / NBFC labels that must not be merged into corporate Iceberg tables.
+_SCREENER_BANK_METRICS = frozenset(
+    {
+        "revenue",
+        "financing_profit",
+        "financing_margin",
+        "gross_npa",
+        "net_npa",
+    }
+)
 
 
 def _require(name: str) -> str:
@@ -104,14 +117,36 @@ def load_equity_universe_symbols(*, exchange: str = "NSE", limit: int | None = N
     return symbols
 
 
-def align_dataframe_to_iceberg_table(table_fqn: str, df: pd.DataFrame) -> pd.DataFrame:
+def align_dataframe_to_iceberg_table(
+    table_fqn: str,
+    df: pd.DataFrame,
+    *,
+    metric_columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
     """Match scrape columns to an existing Iceberg table so merge-upsert can run.
 
     Screener HTML varies by company; without this, a new metric (e.g. ``roe`` on
     ``ratios``) breaks dlt load with schema mismatch errors.
+
+    When ``metric_columns`` is set, only those metrics are loaded (intersected with
+    Glue when the catalog lists extra bank-only fields not on the physical table).
     """
     if df.empty:
         return df
+    base_keys = ("symbol", "financial_period")
+    if metric_columns is not None:
+        # metric_columns is full Iceberg metric layout (incl. bank-only cols as null).
+        data_cols = list(base_keys) + list(metric_columns)
+        out = df.copy()
+        for col in data_cols:
+            if col not in out.columns:
+                out[col] = pd.NA
+        extra = [c for c in out.columns if c not in data_cols]
+        if extra:
+            log.warning("Align %s: dropping columns outside load set: %s", table_fqn, extra)
+            out = out.drop(columns=extra)
+        return out[data_cols]
+
     try:
         catalog = load_glue_catalog()
         iceberg_table = catalog.load_table(table_fqn)
@@ -140,23 +175,106 @@ def align_dataframe_to_iceberg_table(table_fqn: str, df: pd.DataFrame) -> pd.Dat
     return out[data_cols]
 
 
-def screener_iceberg_metric_columns(
-    table_fqn: str,
-    *,
-    fallback: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Metric columns on an existing Iceberg table (excludes keys + ingested_at)."""
+def screener_iceberg_table_column_names(table_fqn: str) -> tuple[str, ...] | None:
+    """Iceberg user columns through ``ingested_at`` (stops before ``_dlt_*`` / bank tail)."""
     try:
         catalog = load_glue_catalog()
         iceberg_table = catalog.load_table(table_fqn)
-        metrics = [
-            field.name
-            for field in iceberg_table.schema().fields
-            if field.name not in _DLT_INTERNAL_COLS
-            and field.name not in {"symbol", "financial_period", "ingested_at"}
-        ]
-        if metrics:
-            return tuple(metrics)
+        layout: list[str] = []
+        for field in iceberg_table.schema().fields:
+            name = field.name
+            if name in _DLT_INTERNAL_COLS:
+                break
+            layout.append(name)
+        return tuple(layout) if layout else None
     except Exception:
-        pass
-    return fallback
+        return None
+
+
+def screener_load_metric_columns(
+    table_fqn: str,
+    *,
+    canonical: tuple[str, ...],
+    table_name: str | None = None,
+) -> tuple[str, ...]:
+    """Metric columns to populate from scrape (excludes keys and ``ingested_at``)."""
+    layout = screener_iceberg_table_column_names(table_fqn)
+    if layout:
+        return tuple(
+            name
+            for name in layout
+            if name not in {"symbol", "financial_period", "ingested_at"}
+        )
+    return tuple(m for m in canonical if m not in _SCREENER_BANK_METRICS)
+
+
+def compact_screener_iceberg_schema(
+    table_fqn: str,
+    *,
+    keep_metrics: Sequence[str],
+) -> list[str]:
+    """Remove bank-only / stray columns from Glue Iceberg (fixes upsert schema mismatch)."""
+    allowed = (
+        {"symbol", "financial_period", "ingested_at", "_dlt_load_id", "_dlt_id"}
+        | set(keep_metrics)
+    )
+    try:
+        catalog = load_glue_catalog()
+        table = catalog.load_table(table_fqn)
+    except Exception as exc:
+        log.warning("Could not compact Iceberg schema for %s: %s", table_fqn, exc)
+        return []
+
+    to_drop = [field.name for field in table.schema().fields if field.name not in allowed]
+    if not to_drop:
+        return []
+    try:
+        with table.update_schema() as update:
+            for name in to_drop:
+                update.delete_column(name)
+    except Exception as exc:
+        log.warning("Iceberg schema compact failed for %s: %s", table_fqn, exc)
+        return []
+    log.warning("Dropped orphan Iceberg columns on %s: %s", table_fqn, to_drop)
+    return to_drop
+
+
+def align_dlt_pipeline_table_schema(
+    pipeline: dlt.Pipeline,
+    table_name: str,
+    *,
+    column_specs: dict[str, Any],
+) -> None:
+    """Match local dlt table schema to Iceberg layout (order + null bank columns)."""
+    pipeline.activate()
+    if not pipeline.default_schema_name:
+        return
+    try:
+        schema = pipeline.default_schema
+    except SchemaNotFoundError:
+        return
+    try:
+        table = schema.get_table(table_name)
+    except TableNotFound:
+        return
+
+    dlt_prefix = schema._dlt_tables_prefix
+    allowed = set(column_specs.keys())
+    for col_name in list(table["columns"]):
+        if col_name in allowed or is_dlt_table_or_column(col_name, dlt_prefix):
+            continue
+        table["columns"].pop(col_name)
+
+    for col_name, spec in column_specs.items():
+        if col_name not in table["columns"]:
+            table["columns"][col_name] = spec
+
+    ordered: list[str] = []
+    for name in column_specs:
+        if name in table["columns"]:
+            ordered.append(name)
+    for name in table["columns"]:
+        if is_dlt_table_or_column(name, dlt_prefix) and name not in ordered:
+            ordered.append(name)
+    table["columns"] = {name: table["columns"][name] for name in ordered}
+    pipeline._schema_storage.save_schema(schema)

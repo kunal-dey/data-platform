@@ -3,7 +3,54 @@ import dagster as dg
 listings_job = dg.define_asset_job(
     name="listings_job",
     selection=dg.AssetSelection.key_prefixes(["bronze_listings"]),
-    description="Load NSE/BSE equity listings into bronze_listings.equity_universe",
+    description=(
+        "Load NSE/BSE equity universe and Kite MF instruments into bronze_listings.*"
+    ),
+)
+
+mf_pricing_daily_job = dg.define_asset_job(
+    name="mf_pricing_daily_job",
+    selection=dg.AssetSelection.assets(
+        dg.AssetKey(["bronze_mf", "mf_pricing_daily"])
+    ),
+    description=(
+        "Daily AMFI NAV snapshot merge-upsert into bronze_mf.nav_history"
+    ),
+)
+
+mf_pricing_historical_job = dg.define_asset_job(
+    name="mf_pricing_historical_job",
+    selection=dg.AssetSelection.assets(
+        dg.AssetKey(["bronze_mf", "mf_pricing_historical"])
+    ),
+    description=(
+        "One-time/backfill mfapi NAV history merge-upsert into bronze_mf.nav_history"
+    ),
+    tags={"dagster/max_runtime": 86400},
+)
+
+equity_pricing_historical_job = dg.define_asset_job(
+    name="equity_pricing_historical_job",
+    selection=dg.AssetSelection.assets(
+        dg.AssetKey(["bronze_equity", "equity_pricing_historical"])
+    ),
+    description=(
+        "Yahoo Finance OHLCV backfill for equity_universe → bronze_equity.price_history"
+    ),
+    tags={"dagster/max_runtime": 86400},
+)
+
+equity_pricing_daily_job = dg.define_asset_job(
+    name="equity_pricing_daily_job",
+    selection=dg.AssetSelection.assets(
+        dg.AssetKey(["bronze_equity", "equity_pricing_daily"]),
+        dg.AssetKey(["bronze_equity", "equity_pricing_predictions"]),
+    ),
+    description=(
+        "Kite daily quotes → bronze_equity.price_history; "
+        "technical_analyst forecasts → bronze_equity.price_predictions "
+        "(set access_token in Launchpad)"
+    ),
 )
 
 screener_job = dg.define_asset_job(
@@ -29,6 +76,29 @@ stock_news_job = dg.define_asset_job(
     default_status=dg.DefaultScheduleStatus.RUNNING,
 )
 def listings_weekly_schedule():
+    return dg.RunRequest()
+
+
+@dg.schedule(
+    name="mf_pricing_daily",
+    cron_schedule="45 20 * * *",  # Every day 20:45 IST (after AMFI update window)
+    job=mf_pricing_daily_job,
+    execution_timezone="Asia/Kolkata",
+    default_status=dg.DefaultScheduleStatus.RUNNING,
+)
+def mf_pricing_daily_schedule():
+    return dg.RunRequest()
+
+
+@dg.schedule(
+    name="equity_pricing_daily",
+    cron_schedule="30 15 * * 1-5",  # Weekdays 15:30 IST (near NSE close)
+    job=equity_pricing_daily_job,
+    execution_timezone="Asia/Kolkata",
+    default_status=dg.DefaultScheduleStatus.STOPPED,
+)
+def equity_pricing_daily_schedule():
+    # Scheduled runs need KITE_ACCESS_TOKEN in process env; manual runs use Launchpad.
     return dg.RunRequest()
 
 
@@ -59,9 +129,19 @@ def stock_news_daily_schedule():
 @dg.definitions
 def extraction_schedules():
     return dg.Definitions(
-        jobs=[listings_job, screener_job, stock_news_job],
+        jobs=[
+            listings_job,
+            mf_pricing_daily_job,
+            mf_pricing_historical_job,
+            equity_pricing_historical_job,
+            equity_pricing_daily_job,
+            screener_job,
+            stock_news_job,
+        ],
         schedules=[
             listings_weekly_schedule,
+            mf_pricing_daily_schedule,
+            equity_pricing_daily_schedule,
             screener_daily_schedule,
             stock_news_daily_schedule,
         ],
